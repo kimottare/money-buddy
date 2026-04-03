@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Money Pilot - Cloud Edition</title>
+    <title>Money Pilot - クラウド完全版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -15,16 +15,15 @@
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Reactから使えるように準備
         window.FirebaseSDK = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, onSnapshot };
         window.dispatchEvent(new Event('firebase-loaded'));
     </script>
 </head>
-<body class="bg-gray-50">
+<body class="bg-slate-50">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useMemo, useEffect, useCallback } = React;
+        const { useState, useMemo, useEffect } = React;
 
         // ★★★ ここにFirebaseの画面でコピーした設定コードを貼り付けます ★★★
         const firebaseConfig = {
@@ -44,13 +43,17 @@
             '遊興費': 'wants', '映画': 'wants', '趣味': 'wants', 'サブスクリプション': 'wants'
         };
 
+        const defaultFixedCosts = [
+            { id: 'f1', name: '家賃・住居費', amount: 60000, category: 'needs' },
+            { id: 'f2', name: '奨学金返済', amount: 15000, category: 'needs' }
+        ];
+
         const categoryLabels = {
             needs: { label: '必要な支出', color: 'bg-green-500', text: 'text-green-700' },
             wants: { label: '浪費', color: 'bg-red-500', text: 'text-red-700' },
             investment: { label: '投資', color: 'bg-blue-500', text: 'text-blue-700' }
         };
 
-        // 日付文字列（2026/03/26など）から「2026年03月」を作る関数
         const getMonthString = (dateString) => {
             if (!dateString) return '不明';
             const parts = dateString.split(/[\/\-]/);
@@ -62,21 +65,11 @@
             return '不明';
         };
 
-        // 日付文字列から「2026年」を作る関数
         const getYearString = (dateString) => {
             if (!dateString) return '不明';
             const parts = dateString.split(/[\/\-]/);
-            if (parts.length >= 1) {
-                return `${parts[0]}年`;
-            }
+            if (parts.length >= 1) return `${parts[0]}年`;
             return '不明';
-        };
-
-        // 個別明細用のユニークID生成関数
-        const generateId = () => {
-            return typeof crypto !== 'undefined' && crypto.randomUUID 
-                ? crypto.randomUUID() 
-                : `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         };
 
         let app, auth, db;
@@ -84,7 +77,12 @@
             const [user, setUser] = useState(null);
             const [expenses, setExpenses] = useState([]);
             const [categoryMapping, setCategoryMapping] = useState(defaultCategoryMapping);
+            const [income, setIncome] = useState(200000); // 手取り収入
+            const [fixedCosts, setFixedCosts] = useState(defaultFixedCosts); // 固定費リスト
+            
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+            const [settingsTab, setSettingsTab] = useState('budget'); // 'budget' or 'category'
+            
             const [selectedDetailType, setSelectedDetailType] = useState(null);
             const [expandedCategory, setExpandedCategory] = useState(null);
             const [isLoading, setIsLoading] = useState(true);
@@ -123,6 +121,8 @@
                         const data = snapshot.data();
                         setExpenses(data.expenses || []);
                         setCategoryMapping(data.mapping || defaultCategoryMapping);
+                        if (data.income !== undefined) setIncome(data.income);
+                        if (data.fixedCosts) setFixedCosts(data.fixedCosts);
                     }
                     setIsLoading(false);
                 }, (error) => {
@@ -132,16 +132,12 @@
                 return () => unsubscribe();
             }, [user, config.projectId]);
 
-            const saveData = async (newExpenses, newMapping) => {
+            const saveToCloud = async (updateData) => {
                 if (!user) return;
                 const fb = window.FirebaseSDK;
                 const userDocRef = fb.doc(db, 'artifacts', config.projectId, 'users', user.uid, 'settings', 'main');
                 try {
-                    await fb.setDoc(userDocRef, {
-                        expenses: newExpenses,
-                        mapping: newMapping,
-                        updatedAt: new Date().toISOString()
-                    }, { merge: true });
+                    await fb.setDoc(userDocRef, { ...updateData, updatedAt: new Date().toISOString() }, { merge: true });
                 } catch (error) {
                     console.error("Error saving data: ", error);
                     alert("クラウドへの保存に失敗しました。");
@@ -168,12 +164,11 @@
                             
                             if (!isNaN(amount)) {
                                 parsedData.push({
-                                    id: generateId(), // 更新用にIDを付与
+                                    id: crypto.randomUUID(), // 個別識別用ID
                                     amount: Math.abs(amount),
                                     date: values[1].replace(/"/g, '').trim(),
                                     memo: values[2].replace(/"/g, '').trim(),
                                     category: values[3].replace(/"/g, '').trim()
-                                    // manualType: 個別分類（未設定の場合はここには追加しない）
                                 });
                             }
                         }
@@ -181,10 +176,10 @@
                     
                     if (parsedData.length > 0) {
                         parsedData.sort((a, b) => new Date(b.date) - new Date(a.date));
-                        await saveData(parsedData, categoryMapping);
+                        await saveToCloud({ expenses: parsedData });
                         alert(`${parsedData.length}件のデータを読み込みました！`);
                     } else {
-                        alert("データを読み込めませんでした。CSVの形式が正しいか確認してください。");
+                        alert("データを読み込めませんでした。");
                     }
                     event.target.value = '';
                 };
@@ -194,38 +189,32 @@
             const handleCategoryChange = async (category, newType) => {
                 const updatedMapping = { ...categoryMapping, [category]: newType };
                 setCategoryMapping(updatedMapping);
-                await saveData(expenses, updatedMapping);
+                await saveToCloud({ mapping: updatedMapping });
             };
 
-            // 個別の明細の分類を取得する関数（個別設定優先）
-            const getExpenseType = useCallback((exp) => {
-                if (exp.manualType) return exp.manualType;
-                return categoryMapping[exp.category] || 'needs';
-            }, [categoryMapping]);
+            const handleAddFixedCost = () => {
+                const newCost = { id: crypto.randomUUID(), name: '新規固定費', amount: 0, category: 'needs' };
+                const newFixedCosts = [...fixedCosts, newCost];
+                setFixedCosts(newFixedCosts);
+                saveToCloud({ fixedCosts: newFixedCosts });
+            };
 
-            // 個別の明細の分類を変更・保存する関数
-            const handleExpenseTypeChange = async (targetExp, newType) => {
-                const defaultType = categoryMapping[targetExp.category] || 'needs';
-                
-                const newExpenses = expenses.map(exp => {
-                    const isMatch = exp.id 
-                        ? exp.id === targetExp.id 
-                        : (exp.date === targetExp.date && exp.amount === targetExp.amount && exp.memo === targetExp.memo && exp.category === targetExp.category);
-                    
-                    if (isMatch) {
-                        const updatedExp = { ...exp };
-                        if (newType === defaultType) {
-                            delete updatedExp.manualType;
-                        } else {
-                            updatedExp.manualType = newType;
-                        }
-                        return updatedExp;
-                    }
-                    return exp;
-                });
-                
-                setExpenses(newExpenses);
-                await saveData(newExpenses, categoryMapping);
+            const handleUpdateFixedCost = (id, field, value) => {
+                const newFixedCosts = fixedCosts.map(c => c.id === id ? { ...c, [field]: value } : c);
+                setFixedCosts(newFixedCosts);
+                saveToCloud({ fixedCosts: newFixedCosts });
+            };
+
+            const handleDeleteFixedCost = (id) => {
+                const newFixedCosts = fixedCosts.filter(c => c.id !== id);
+                setFixedCosts(newFixedCosts);
+                saveToCloud({ fixedCosts: newFixedCosts });
+            };
+
+            const handleIncomeChange = (val) => {
+                const num = parseInt(val, 10) || 0;
+                setIncome(num);
+                saveToCloud({ income: num });
             };
 
             const availableMonths = useMemo(() => {
@@ -259,141 +248,163 @@
                 }
             }, [expenses, selectedMonth, selectedYear, viewMode]);
 
-            const currentMonthData = useMemo(() => {
+            // 変動費の計算
+            const variableMonthData = useMemo(() => {
                 const summary = { needs: 0, wants: 0, investment: 0 };
                 filteredExpenses.forEach(exp => {
-                    const type = getExpenseType(exp);
+                    const type = exp.customType || categoryMapping[exp.category] || 'needs';
                     summary[type] += exp.amount;
                 });
                 return summary;
-            }, [filteredExpenses, getExpenseType]);
+            }, [filteredExpenses, categoryMapping]);
 
+            // 固定費の計算
+            const fixedTotalData = useMemo(() => {
+                const summary = { needs: 0, wants: 0, investment: 0 };
+                fixedCosts.forEach(cost => {
+                    summary[cost.category] += cost.amount;
+                });
+                // 年間表示の場合は12倍にする（簡易対応）
+                if (viewMode === 'year') {
+                    summary.needs *= 12; summary.wants *= 12; summary.investment *= 12;
+                }
+                return summary;
+            }, [fixedCosts, viewMode]);
+
+            // 総支出（固定費＋変動費）
+            const currentTotalData = useMemo(() => {
+                return {
+                    needs: variableMonthData.needs + fixedTotalData.needs,
+                    wants: variableMonthData.wants + fixedTotalData.wants,
+                    investment: variableMonthData.investment + fixedTotalData.investment
+                };
+            }, [variableMonthData, fixedTotalData]);
+
+            const totalFixed = fixedTotalData.needs + fixedTotalData.wants + fixedTotalData.investment;
+            const totalVariable = variableMonthData.needs + variableMonthData.wants + variableMonthData.investment;
+            const targetIncome = viewMode === 'year' ? income * 12 : income;
+            const remainingMoney = targetIncome - totalFixed - totalVariable;
+            const remainingPercent = Math.max(0, (remainingMoney / targetIncome) * 100);
+
+            // アコーディオン用データグループ化
             const groupedExpenses = useMemo(() => {
                 if (!selectedDetailType) return [];
-                const filtered = filteredExpenses.filter(exp => getExpenseType(exp) === selectedDetailType);
+                
+                // 固定費を仮想カテゴリーとして追加
+                const fixedItems = fixedCosts.filter(c => c.category === selectedDetailType).map(c => ({
+                    date: '毎月固定',
+                    memo: '固定費設定より',
+                    amount: viewMode === 'year' ? c.amount * 12 : c.amount,
+                    isFixed: true
+                }));
+
                 const grouped = {};
-                filtered.forEach(exp => {
-                    if (!grouped[exp.category]) {
-                        grouped[exp.category] = { total: 0, items: [] };
-                    }
+                if (fixedItems.length > 0) {
+                    grouped['📌 固定費'] = { total: fixedItems.reduce((s, i) => s + i.amount, 0), items: fixedItems };
+                }
+
+                // 変動費をグループ化
+                const filteredVars = filteredExpenses.filter(exp => (exp.customType || categoryMapping[exp.category] || 'needs') === selectedDetailType);
+                filteredVars.forEach(exp => {
+                    if (!grouped[exp.category]) grouped[exp.category] = { total: 0, items: [] };
                     grouped[exp.category].total += exp.amount;
                     grouped[exp.category].items.push(exp);
                 });
-                return Object.entries(grouped).sort((a, b) => b[1].total - a[1].total);
-            }, [filteredExpenses, getExpenseType, selectedDetailType]);
 
-            if (isLoading) return <div className="flex items-center justify-center h-screen text-gray-500">クラウドと通信中...</div>;
+                return Object.entries(grouped).sort((a, b) => b[1].total - a[1].total);
+            }, [filteredExpenses, categoryMapping, selectedDetailType, fixedCosts, viewMode]);
+
+            // パイロットからのアドバイス生成
+            const getPilotMessage = () => {
+                if (remainingMoney < 0) return { text: "⚠️ 警告：予算をオーバーしています！支出を見直しましょう。", color: "bg-red-100 text-red-800 border-red-200" };
+                if (remainingPercent < 10) return { text: "🛬 注意：残りの燃料（資金）がわずかです。セーブモードに入ってください。", color: "bg-yellow-100 text-yellow-800 border-yellow-200" };
+                if (currentTotalData.wants > (targetIncome * 0.3)) return { text: "💡 アドバイス：浪費（Wants）が収入の30%を超えています。少し引き締めましょう。", color: "bg-orange-100 text-orange-800 border-orange-200" };
+                return { text: "✈️ 順調です！このままのペースでフライトを続けましょう。", color: "bg-blue-100 text-blue-800 border-blue-200" };
+            };
+            const pilotMsg = getPilotMessage();
+
+            if (isLoading) return <div className="flex items-center justify-center h-screen text-slate-500">システム初期化中...</div>;
 
             return (
-                <div className="min-h-screen flex justify-center font-sans pb-20">
-                    <div className="w-full max-w-md bg-white shadow-lg relative min-h-screen">
-                        <header className="bg-white text-center border-b sticky top-0 z-20">
-                            <div className="p-4">
-                                <h1 className="text-xl font-bold text-gray-800 tracking-tight">Money Pilot ☁️</h1>
-                                <div className="mt-3">
-                                    <label className="inline-block bg-blue-500 hover:bg-blue-600 text-white text-sm font-bold py-2 px-6 rounded-full cursor-pointer shadow-md transition">
-                                        <span>CSVをクラウドに同期する</span>
-                                        <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
-                                    </label>
-                                </div>
-                                {user && <p className="text-[10px] text-gray-400 mt-2">ID: {user.uid}</p>}
-                            </div>
-
-                            <div className="flex bg-white">
-                                <button 
-                                    className={`flex-1 py-3 text-sm font-bold transition ${viewMode === 'month' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400 hover:bg-gray-50'}`}
-                                    onClick={() => setViewMode('month')}
-                                >
-                                    月間
-                                </button>
-                                <button 
-                                    className={`flex-1 py-3 text-sm font-bold transition ${viewMode === 'year' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400 hover:bg-gray-50'}`}
-                                    onClick={() => setViewMode('year')}
-                                >
-                                    年間
-                                </button>
+                <div className="min-h-screen flex justify-center font-sans pb-24">
+                    <div className="w-full max-w-md bg-white shadow-xl relative min-h-screen">
+                        
+                        {/* ヘッダーエリア */}
+                        <header className="bg-slate-900 text-white text-center sticky top-0 z-20">
+                            <div className="p-4 flex justify-between items-center">
+                                <h1 className="text-xl font-black tracking-wider italic">Money Pilot ✈️</h1>
+                                <label className="bg-blue-500 hover:bg-blue-400 text-white text-xs font-bold py-2 px-4 rounded shadow transition cursor-pointer">
+                                    CSV同期
+                                    <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+                                </label>
                             </div>
                             
-                            {viewMode === 'month' && availableMonths.length > 0 && (
-                                <div className="bg-gray-50 flex justify-between items-center px-4 py-2 border-b">
-                                    <button 
-                                        onClick={() => {
-                                            const idx = availableMonths.indexOf(selectedMonth);
-                                            if (idx < availableMonths.length - 1) setSelectedMonth(availableMonths[idx + 1]);
-                                        }}
-                                        disabled={availableMonths.indexOf(selectedMonth) === availableMonths.length - 1}
-                                        className="text-gray-600 disabled:opacity-30 p-2 text-sm font-bold"
-                                    >
-                                        ◀ 前月
-                                    </button>
-                                    <div className="font-bold text-gray-800 text-lg">
-                                        {selectedMonth}
-                                    </div>
-                                    <button 
-                                        onClick={() => {
-                                            const idx = availableMonths.indexOf(selectedMonth);
-                                            if (idx > 0) setSelectedMonth(availableMonths[idx - 1]);
-                                        }}
-                                        disabled={availableMonths.indexOf(selectedMonth) <= 0}
-                                        className="text-gray-600 disabled:opacity-30 p-2 text-sm font-bold"
-                                    >
-                                        次月 ▶
-                                    </button>
-                                </div>
-                            )}
-
-                            {viewMode === 'year' && availableYears.length > 0 && (
-                                <div className="bg-gray-50 flex justify-between items-center px-4 py-2 border-b">
-                                    <button 
-                                        onClick={() => {
-                                            const idx = availableYears.indexOf(selectedYear);
-                                            if (idx < availableYears.length - 1) setSelectedYear(availableYears[idx + 1]);
-                                        }}
-                                        disabled={availableYears.indexOf(selectedYear) === availableYears.length - 1}
-                                        className="text-gray-600 disabled:opacity-30 p-2 text-sm font-bold"
-                                    >
-                                        ◀ 前年
-                                    </button>
-                                    <div className="font-bold text-gray-800 text-lg">
-                                        {selectedYear}
-                                    </div>
-                                    <button 
-                                        onClick={() => {
-                                            const idx = availableYears.indexOf(selectedYear);
-                                            if (idx > 0) setSelectedYear(availableYears[idx - 1]);
-                                        }}
-                                        disabled={availableYears.indexOf(selectedYear) <= 0}
-                                        className="text-gray-600 disabled:opacity-30 p-2 text-sm font-bold"
-                                    >
-                                        次年 ▶
-                                    </button>
-                                </div>
-                            )}
+                            <div className="flex bg-slate-800">
+                                <button className={`flex-1 py-3 text-sm font-bold transition ${viewMode === 'month' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-900' : 'text-slate-400 hover:bg-slate-700'}`} onClick={() => setViewMode('month')}>MONTH</button>
+                                <button className={`flex-1 py-3 text-sm font-bold transition ${viewMode === 'year' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-900' : 'text-slate-400 hover:bg-slate-700'}`} onClick={() => setViewMode('year')}>YEAR</button>
+                            </div>
+                            
+                            {/* 月・年 ナビゲーション */}
+                            <div className="bg-slate-100 flex justify-between items-center px-4 py-2 text-slate-800 border-b">
+                                <button onClick={() => {
+                                    const list = viewMode === 'month' ? availableMonths : availableYears;
+                                    const setter = viewMode === 'month' ? setSelectedMonth : setSelectedYear;
+                                    const current = viewMode === 'month' ? selectedMonth : selectedYear;
+                                    const idx = list.indexOf(current);
+                                    if (idx < list.length - 1) setter(list[idx + 1]);
+                                }} className="disabled:opacity-30 p-2 text-sm font-bold">◀ 前</button>
+                                <div className="font-bold text-lg">{viewMode === 'month' ? selectedMonth : selectedYear}</div>
+                                <button onClick={() => {
+                                    const list = viewMode === 'month' ? availableMonths : availableYears;
+                                    const setter = viewMode === 'month' ? setSelectedMonth : setSelectedYear;
+                                    const current = viewMode === 'month' ? selectedMonth : selectedYear;
+                                    const idx = list.indexOf(current);
+                                    if (idx > 0) setter(list[idx - 1]);
+                                }} className="disabled:opacity-30 p-2 text-sm font-bold">次 ▶</button>
+                            </div>
                         </header>
 
                         <div className="p-4 space-y-6">
+                            
+                            {/* ナビゲーション（パイロットボード） */}
+                            <div className="bg-white rounded-2xl border-2 border-slate-100 shadow-sm overflow-hidden">
+                                <div className={`px-4 py-3 text-sm font-bold border-b ${pilotMsg.color}`}>
+                                    {pilotMsg.text}
+                                </div>
+                                <div className="p-5">
+                                    <p className="text-xs text-slate-500 font-bold mb-1">今月自由に使えるお金（残燃料）</p>
+                                    <div className="flex items-end space-x-2 mb-3">
+                                        <span className="text-3xl font-black text-slate-800">¥{remainingMoney.toLocaleString()}</span>
+                                        <span className="text-sm text-slate-400 mb-1">/ 予算 ¥{(targetIncome - totalFixed).toLocaleString()}</span>
+                                    </div>
+                                    <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden shadow-inner">
+                                        <div className={`h-full transition-all duration-500 ${remainingPercent > 20 ? 'bg-blue-500' : 'bg-red-500'}`} style={{ width: `${remainingPercent}%` }} />
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-500 mt-2 font-medium">
+                                        <span>固定費済: ¥{totalFixed.toLocaleString()}</span>
+                                        <span>変動費使用: ¥{totalVariable.toLocaleString()}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 支出バランス */}
                             <div className="bg-white rounded-xl border p-5 shadow-sm">
-                                <h2 className="text-lg font-bold mb-4 text-gray-700 border-b pb-2">
-                                    {viewMode === 'month' ? (selectedMonth ? `${selectedMonth}の支出バランス` : '今月の支出バランス') : (selectedYear ? `${selectedYear}の支出バランス` : '今年の支出バランス')}
-                                </h2>
+                                <h2 className="text-sm font-bold mb-4 text-slate-400 tracking-wide uppercase border-b pb-2">BALANCE</h2>
                                 {['needs', 'wants', 'investment'].map(type => {
-                                    const current = currentMonthData[type];
-                                    const target = viewMode === 'year' ? 50000 * 12 : 50000;
+                                    const current = currentTotalData[type];
+                                    // 理想の配分 (Needs 50%, Wants 30%, Inv 20%) を目標値とする
+                                    const ratios = { needs: 0.5, wants: 0.3, investment: 0.2 };
+                                    const target = targetIncome * ratios[type];
                                     const percent = Math.min((current / target) * 100, 100) || 0;
                                     return (
-                                        <div 
-                                            key={type} 
-                                            className="mb-4 cursor-pointer hover:bg-gray-50 p-2 -mx-2 rounded-lg transition"
-                                            onClick={() => setSelectedDetailType(type)}
-                                        >
+                                        <div key={type} className="mb-4 cursor-pointer hover:bg-slate-50 p-2 -mx-2 rounded-lg transition" onClick={() => setSelectedDetailType(type)}>
                                             <div className="flex justify-between text-sm mb-1">
                                                 <span className={`font-bold ${categoryLabels[type].text}`}>{categoryLabels[type].label}</span>
-                                                <span className="text-gray-600">
-                                                    {current.toLocaleString()}円 
-                                                    <span className="text-xs text-gray-400 ml-1">▶</span>
+                                                <span className="text-slate-700 font-medium">
+                                                    ¥{current.toLocaleString()} <span className="text-xs text-slate-400 font-normal">/ 目安 ¥{target.toLocaleString()}</span>
                                                 </span>
                                             </div>
-                                            <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
+                                            <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
                                                 <div className={`h-full ${categoryLabels[type].color}`} style={{ width: `${percent}%` }} />
                                             </div>
                                         </div>
@@ -401,144 +412,148 @@
                                 })}
                             </div>
 
-                            <div>
-                                <h3 className="text-md font-bold text-gray-700 mb-3 px-1">
-                                    {viewMode === 'month' ? (selectedMonth ? `${selectedMonth}の支出履歴` : '支出履歴') : (selectedYear ? `${selectedYear}の支出履歴` : '支出履歴')}
-                                </h3>
-                                <div className="space-y-2">
-                                    {filteredExpenses.length === 0 && <p className="text-sm text-gray-500">まだデータがありません。CSVをアップロードしてください。</p>}
-                                    {filteredExpenses.slice(0, 10).map((exp, idx) => {
-                                        const type = getExpenseType(exp);
-                                        const isManual = !!exp.manualType;
-                                        return (
-                                            <div key={exp.id || idx} className="flex justify-between items-center bg-gray-50 p-3 rounded-lg text-sm border">
-                                                <div className="flex items-center space-x-3 flex-1 overflow-hidden">
-                                                    <span className={`w-3 h-3 rounded-full ${categoryLabels[type].color} shrink-0`}></span>
-                                                    <div className="truncate">
-                                                        <div className="font-medium text-gray-700 truncate">{exp.category}</div>
-                                                        <div className="text-xs text-gray-500">{exp.date}</div>
-                                                    </div>
-                                                </div>
-                                                <div className="flex flex-col items-end space-y-1 ml-2 shrink-0">
-                                                    <div className="font-bold text-gray-700">¥{exp.amount.toLocaleString()}</div>
-                                                    <select 
-                                                        value={type} 
-                                                        onChange={(e) => handleExpenseTypeChange(exp, e.target.value)}
-                                                        className={`text-[10px] border rounded px-1.5 py-0.5 outline-none font-medium cursor-pointer transition ${
-                                                            isManual ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-white border-gray-300 text-gray-600'
-                                                        }`}
-                                                    >
-                                                        <option value="needs">必要な支出</option>
-                                                        <option value="wants">浪費</option>
-                                                        <option value="investment">投資</option>
-                                                    </select>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
                         </div>
 
-                        <div className="fixed bottom-0 w-full max-w-md bg-white border-t p-3">
-                            <button onClick={() => setIsSettingsOpen(true)} className="w-full bg-gray-100 py-3 rounded-xl font-semibold text-gray-700 shadow-sm">
-                                カテゴリー全体の設定
+                        {/* 下部固定ボタン */}
+                        <div className="fixed bottom-0 w-full max-w-md bg-white border-t p-3 z-20 pb-safe">
+                            <button onClick={() => setIsSettingsOpen(true)} className="w-full bg-slate-800 hover:bg-slate-900 py-3.5 rounded-xl font-bold text-white shadow transition flex justify-center items-center space-x-2">
+                                <span>⚙️ フライト設定（予算・固定費・分類）</span>
                             </button>
                         </div>
 
+                        {/* 設定モーダル */}
                         {isSettingsOpen && (
-                            <div className="absolute inset-0 bg-black bg-opacity-50 z-30 flex items-end">
-                                <div className="bg-white w-full rounded-t-3xl p-5 pb-10 max-h-[80vh] overflow-y-auto">
-                                    <div className="flex justify-between items-center mb-4 border-b pb-2">
-                                        <h3 className="text-lg font-bold">カテゴリー全体の設定</h3>
-                                        <button onClick={() => setIsSettingsOpen(false)} className="text-gray-500 text-xl px-2">✕</button>
+                            <div className="fixed inset-0 bg-slate-900 bg-opacity-60 z-30 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                                <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl h-[85vh] sm:h-auto sm:max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-slide-up">
+                                    <div className="flex justify-between items-center p-5 border-b bg-white z-10">
+                                        <h3 className="text-lg font-black text-slate-800">フライト設定</h3>
+                                        <button onClick={() => setIsSettingsOpen(false)} className="bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-full w-8 h-8 flex items-center justify-center font-bold">✕</button>
                                     </div>
-                                    <p className="text-xs text-gray-500 mb-4">※個別の明細で分類を変更している場合、そちらが優先されます。</p>
-                                    <div className="space-y-4 mb-8">
-                                        {Object.keys(categoryMapping).map(cat => (
-                                            <div key={cat} className="flex items-center justify-between border-b border-gray-100 pb-2">
-                                                <span className="font-medium text-gray-700">{cat}</span>
-                                                <select
-                                                    value={categoryMapping[cat]}
-                                                    onChange={(e) => handleCategoryChange(cat, e.target.value)}
-                                                    className="text-sm p-2 rounded-lg border bg-white cursor-pointer"
-                                                >
-                                                    <option value="needs">必要な支出</option>
-                                                    <option value="wants">浪費</option>
-                                                    <option value="investment">投資</option>
-                                                </select>
-                                            </div>
-                                        ))}
+                                    
+                                    <div className="flex border-b bg-slate-50 text-sm font-bold">
+                                        <button className={`flex-1 py-3 ${settingsTab === 'budget' ? 'text-blue-600 border-b-2 border-blue-600 bg-white' : 'text-slate-400'}`} onClick={() => setSettingsTab('budget')}>収入・固定費</button>
+                                        <button className={`flex-1 py-3 ${settingsTab === 'category' ? 'text-blue-600 border-b-2 border-blue-600 bg-white' : 'text-slate-400'}`} onClick={() => setSettingsTab('category')}>カテゴリー分類</button>
                                     </div>
-                                </div>
-                            </div>
-                        )}
 
-                        {selectedDetailType && (
-                            <div className="absolute inset-0 bg-black bg-opacity-50 z-30 flex items-end">
-                                <div className="bg-white w-full rounded-t-3xl p-5 pb-10 max-h-[80vh] flex flex-col">
-                                    <div className="flex justify-between items-center mb-4 border-b pb-2 shrink-0">
-                                        <h3 className={`text-lg font-bold ${categoryLabels[selectedDetailType].text}`}>
-                                            {categoryLabels[selectedDetailType].label}の内訳
-                                        </h3>
-                                        <button onClick={() => { setSelectedDetailType(null); setExpandedCategory(null); }} className="text-gray-500 text-xl px-2">✕</button>
-                                    </div>
-                                    <div className="overflow-y-auto space-y-3 flex-1">
-                                        {groupedExpenses.map(([categoryName, data]) => (
-                                            <div key={categoryName} className="border rounded-xl overflow-hidden shadow-sm">
-                                                <div 
-                                                    className="flex justify-between items-center bg-gray-50 p-4 cursor-pointer hover:bg-gray-100 transition"
-                                                    onClick={() => setExpandedCategory(expandedCategory === categoryName ? null : categoryName)}
-                                                >
-                                                    <div className="font-bold text-gray-700 flex items-center">
-                                                        {categoryName}
-                                                        <span className="text-xs ml-2 text-gray-400 bg-white px-2 py-0.5 rounded-full border">{data.items.length}件</span>
+                                    <div className="overflow-y-auto p-5 flex-1 bg-white">
+                                        {settingsTab === 'budget' && (
+                                            <div className="space-y-6">
+                                                <div>
+                                                    <label className="block text-sm font-bold text-slate-700 mb-2">手取り月収（ベース予算）</label>
+                                                    <div className="relative">
+                                                        <span className="absolute left-3 top-3 text-slate-500">¥</span>
+                                                        <input type="number" value={income} onChange={(e) => handleIncomeChange(e.target.value)} className="w-full pl-8 p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none" />
                                                     </div>
-                                                    <div className="flex items-center space-x-2">
-                                                        <div className="font-bold text-gray-800">¥{data.total.toLocaleString()}</div>
-                                                        <span className="text-gray-400 text-xs">{expandedCategory === categoryName ? '▲' : '▼'}</span>
-                                                    </div>
+                                                    <p className="text-xs text-slate-400 mt-2">この金額をベースに50/30/20の法則で目標額を算出します。</p>
                                                 </div>
 
-                                                {expandedCategory === categoryName && (
-                                                    <div className="bg-white border-t divide-y">
-                                                        {data.items.map((exp, idx) => {
-                                                            const type = getExpenseType(exp);
-                                                            const isManual = !!exp.manualType;
-                                                            return (
-                                                                <div key={exp.id || idx} className="flex justify-between items-center p-3 text-sm">
-                                                                    <div className="pl-2 border-l-2 border-blue-400 flex-1 overflow-hidden">
-                                                                        <div className="text-xs text-gray-500">{exp.date}</div>
-                                                                        {exp.memo && <div className="text-gray-700 mt-0.5 truncate">{exp.memo}</div>}
-                                                                    </div>
-                                                                    <div className="flex flex-col items-end space-y-1 ml-2 shrink-0">
-                                                                        <div className="text-gray-600 font-bold">¥{exp.amount.toLocaleString()}</div>
-                                                                        <select 
-                                                                            value={type} 
-                                                                            onChange={(e) => handleExpenseTypeChange(exp, e.target.value)}
-                                                                            className={`text-[10px] border rounded px-1.5 py-0.5 outline-none font-medium cursor-pointer transition ${
-                                                                                isManual ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-white border-gray-300 text-gray-600'
-                                                                            }`}
-                                                                        >
-                                                                            <option value="needs">必要</option>
-                                                                            <option value="wants">浪費</option>
-                                                                            <option value="investment">投資</option>
-                                                                        </select>
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
+                                                <div className="border-t pt-6">
+                                                    <div className="flex justify-between items-center mb-4">
+                                                        <label className="text-sm font-bold text-slate-700">毎月の固定費</label>
+                                                        <button onClick={handleAddFixedCost} className="text-xs bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg font-bold hover:bg-blue-200">+ 追加</button>
                                                     </div>
-                                                )}
+                                                    <div className="space-y-3">
+                                                        {fixedCosts.map((cost) => (
+                                                            <div key={cost.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col space-y-2">
+                                                                <div className="flex space-x-2">
+                                                                    <input type="text" value={cost.name} onChange={(e) => handleUpdateFixedCost(cost.id, 'name', e.target.value)} className="flex-1 p-2 border rounded-lg text-sm font-bold bg-white" placeholder="項目名 (例:家賃)" />
+                                                                    <button onClick={() => handleDeleteFixedCost(cost.id)} className="text-red-400 hover:text-red-600 px-2 font-bold text-xl">×</button>
+                                                                </div>
+                                                                <div className="flex space-x-2">
+                                                                    <div className="relative flex-1">
+                                                                        <span className="absolute left-3 top-2 text-slate-500 text-sm">¥</span>
+                                                                        <input type="number" value={cost.amount} onChange={(e) => handleUpdateFixedCost(cost.id, 'amount', parseInt(e.target.value) || 0)} className="w-full pl-7 p-2 border rounded-lg text-sm font-bold bg-white" />
+                                                                    </div>
+                                                                    <select value={cost.category} onChange={(e) => handleUpdateFixedCost(cost.id, 'category', e.target.value)} className="w-1/3 p-2 border rounded-lg text-sm bg-white text-slate-600">
+                                                                        <option value="needs">Needs</option>
+                                                                        <option value="wants">Wants</option>
+                                                                        <option value="investment">Invest</option>
+                                                                    </select>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                        {fixedCosts.length === 0 && <p className="text-sm text-slate-400 text-center py-2">固定費は登録されていません</p>}
+                                                    </div>
+                                                </div>
                                             </div>
-                                        ))}
-                                        {groupedExpenses.length === 0 && (
-                                            <p className="text-sm text-gray-500 text-center py-4">この項目のデータがありません</p>
+                                        )}
+
+                                        {settingsTab === 'category' && (
+                                            <div className="space-y-3">
+                                                <p className="text-xs text-slate-500 mb-4">CSVから読み込まれた項目の基本分類を設定します。</p>
+                                                {Object.keys(categoryMapping).map(cat => (
+                                                    <div key={cat} className="flex items-center justify-between border-b border-slate-100 pb-3">
+                                                        <span className="font-bold text-slate-700">{cat}</span>
+                                                        <select value={categoryMapping[cat]} onChange={(e) => handleCategoryChange(cat, e.target.value)} className="text-sm p-2 rounded-lg border bg-slate-50 font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500">
+                                                            <option value="needs">必要な支出</option>
+                                                            <option value="wants">浪費</option>
+                                                            <option value="investment">投資</option>
+                                                        </select>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         )}
                                     </div>
                                 </div>
                             </div>
                         )}
+
+                        {/* 内訳表示用モーダル */}
+                        {selectedDetailType && (
+                            <div className="fixed inset-0 bg-slate-900 bg-opacity-60 z-30 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                                <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl h-[80vh] sm:max-h-[80vh] flex flex-col shadow-2xl overflow-hidden animate-slide-up">
+                                    <div className="flex justify-between items-center p-5 border-b bg-white z-10">
+                                        <h3 className={`text-lg font-black ${categoryLabels[selectedDetailType].text}`}>
+                                            {categoryLabels[selectedDetailType].label}の内訳
+                                        </h3>
+                                        <button onClick={() => { setSelectedDetailType(null); setExpandedCategory(null); }} className="bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-full w-8 h-8 flex items-center justify-center font-bold">✕</button>
+                                    </div>
+                                    <div className="overflow-y-auto p-4 space-y-3 flex-1 bg-slate-50">
+                                        {groupedExpenses.map(([categoryName, data]) => (
+                                            <div key={categoryName} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                                <div className="flex justify-between items-center p-4 cursor-pointer hover:bg-slate-50 transition" onClick={() => setExpandedCategory(expandedCategory === categoryName ? null : categoryName)}>
+                                                    <div className="font-bold text-slate-700 flex items-center">
+                                                        {categoryName}
+                                                        <span className="text-xs ml-2 text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{data.items.length}件</span>
+                                                    </div>
+                                                    <div className="flex items-center space-x-2">
+                                                        <div className="font-black text-slate-800">¥{data.total.toLocaleString()}</div>
+                                                        <span className="text-slate-300 text-xs">{expandedCategory === categoryName ? '▲' : '▼'}</span>
+                                                    </div>
+                                                </div>
+
+                                                {expandedCategory === categoryName && (
+                                                    <div className="bg-white border-t border-slate-100 divide-y divide-slate-50">
+                                                        {data.items.map((exp, idx) => (
+                                                            <div key={idx} className="flex justify-between items-center p-3 text-sm">
+                                                                <div className={`pl-2 border-l-2 ${exp.isFixed ? 'border-purple-400' : 'border-blue-400'}`}>
+                                                                    <div className="text-xs text-slate-400 font-medium">{exp.date}</div>
+                                                                    {exp.memo && <div className="text-slate-600 mt-0.5">{exp.memo}</div>}
+                                                                </div>
+                                                                <div className="font-bold text-slate-600">¥{exp.amount.toLocaleString()}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                        {groupedExpenses.length === 0 && (
+                                            <p className="text-sm text-slate-400 text-center py-8 font-medium">この項目のデータがありません</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* CSS for simple animation */}
+                        <style>{`
+                            @keyframes slide-up {
+                                from { transform: translateY(100%); opacity: 0; }
+                                to { transform: translateY(0); opacity: 1; }
+                            }
+                            .animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+                            .pb-safe { padding-bottom: env(safe-area-inset-bottom, 1rem); }
+                        `}</style>
                     </div>
                 </div>
             );
@@ -555,15 +570,15 @@
                 }
             }, []);
 
-            if (!isFirebaseLoaded) return <div className="p-10 text-center text-gray-500">システム準備中...</div>;
+            if (!isFirebaseLoaded) return <div className="flex items-center justify-center h-screen text-slate-500 font-bold tracking-widest">SYSTEM BOOTING...</div>;
             
             if (firebaseConfig.apiKey === "YOUR_API_KEY") {
                 return (
-                    <div className="min-h-screen flex items-center justify-center p-4 bg-gray-50">
-                        <div className="bg-white p-6 rounded-xl shadow border-l-4 border-red-500 max-w-md">
-                            <h2 className="text-lg font-bold text-red-600 mb-2">設定が必要です</h2>
-                            <p className="text-sm text-gray-700">
-                                ソースコードの30行目付近にある <code>firebaseConfig</code> の中身を、Firebaseから取得したコードに書き換えてください。
+                    <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50">
+                        <div className="bg-white p-6 rounded-2xl shadow-lg border-l-4 border-red-500 max-w-md">
+                            <h2 className="text-lg font-black text-red-600 mb-2">⚠ 設定が必要です</h2>
+                            <p className="text-sm text-slate-600 font-medium">
+                                ソースコードの30行目付近にある <code className="bg-slate-100 px-1 rounded">firebaseConfig</code> の中身を、Firebaseから取得したコードに書き換えてください。
                             </p>
                         </div>
                     </div>
