@@ -3,13 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Money Pilot - クラウド完全版</title>
+    <title>Money Pilot - Cloud Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Firebase SDKの読み込み -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -77,11 +76,11 @@
             const [user, setUser] = useState(null);
             const [expenses, setExpenses] = useState([]);
             const [categoryMapping, setCategoryMapping] = useState(defaultCategoryMapping);
-            const [income, setIncome] = useState(200000); // 手取り収入
-            const [fixedCosts, setFixedCosts] = useState(defaultFixedCosts); // 固定費リスト
+            const [income, setIncome] = useState(200000); 
+            const [fixedCosts, setFixedCosts] = useState(defaultFixedCosts); 
             
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-            const [settingsTab, setSettingsTab] = useState('budget'); // 'budget' or 'category'
+            const [settingsTab, setSettingsTab] = useState('budget'); 
             
             const [selectedDetailType, setSelectedDetailType] = useState(null);
             const [expandedCategory, setExpandedCategory] = useState(null);
@@ -164,7 +163,7 @@
                             
                             if (!isNaN(amount)) {
                                 parsedData.push({
-                                    id: crypto.randomUUID(), // 個別識別用ID
+                                    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                                     amount: Math.abs(amount),
                                     date: values[1].replace(/"/g, '').trim(),
                                     memo: values[2].replace(/"/g, '').trim(),
@@ -192,8 +191,24 @@
                 await saveToCloud({ mapping: updatedMapping });
             };
 
+            const handleExpenseTypeChange = async (targetExp, newType) => {
+                const defaultType = categoryMapping[targetExp.category] || 'needs';
+                const newExpenses = expenses.map(exp => {
+                    const isMatch = exp.id ? exp.id === targetExp.id : (exp.date === targetExp.date && exp.amount === targetExp.amount && exp.memo === targetExp.memo && exp.category === targetExp.category);
+                    if (isMatch) {
+                        const updatedExp = { ...exp };
+                        if (newType === defaultType) delete updatedExp.manualType;
+                        else updatedExp.manualType = newType;
+                        return updatedExp;
+                    }
+                    return exp;
+                });
+                setExpenses(newExpenses);
+                await saveToCloud({ expenses: newExpenses });
+            };
+
             const handleAddFixedCost = () => {
-                const newCost = { id: crypto.randomUUID(), name: '新規固定費', amount: 0, category: 'needs' };
+                const newCost = { id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(), name: '新規固定費', amount: 0, category: 'needs' };
                 const newFixedCosts = [...fixedCosts, newCost];
                 setFixedCosts(newFixedCosts);
                 saveToCloud({ fixedCosts: newFixedCosts });
@@ -217,6 +232,8 @@
                 saveToCloud({ income: num });
             };
 
+            const getExpenseType = (exp) => exp.manualType || categoryMapping[exp.category] || 'needs';
+
             const availableMonths = useMemo(() => {
                 const months = new Set();
                 expenses.forEach(exp => months.add(getMonthString(exp.date)));
@@ -230,55 +247,33 @@
             }, [expenses]);
 
             useEffect(() => {
-                if (availableMonths.length > 0 && (!selectedMonth || !availableMonths.includes(selectedMonth))) {
-                    setSelectedMonth(availableMonths[0]);
-                }
-                if (availableYears.length > 0 && (!selectedYear || !availableYears.includes(selectedYear))) {
-                    setSelectedYear(availableYears[0]);
-                }
+                if (availableMonths.length > 0 && (!selectedMonth || !availableMonths.includes(selectedMonth))) setSelectedMonth(availableMonths[0]);
+                if (availableYears.length > 0 && (!selectedYear || !availableYears.includes(selectedYear))) setSelectedYear(availableYears[0]);
             }, [availableMonths, availableYears, selectedMonth, selectedYear]);
 
             const filteredExpenses = useMemo(() => {
-                if (viewMode === 'month') {
-                    if (!selectedMonth) return [];
-                    return expenses.filter(exp => getMonthString(exp.date) === selectedMonth);
-                } else {
-                    if (!selectedYear) return [];
-                    return expenses.filter(exp => getYearString(exp.date) === selectedYear);
-                }
+                if (viewMode === 'month') return selectedMonth ? expenses.filter(exp => getMonthString(exp.date) === selectedMonth) : [];
+                return selectedYear ? expenses.filter(exp => getYearString(exp.date) === selectedYear) : [];
             }, [expenses, selectedMonth, selectedYear, viewMode]);
 
-            // 変動費の計算
             const variableMonthData = useMemo(() => {
                 const summary = { needs: 0, wants: 0, investment: 0 };
-                filteredExpenses.forEach(exp => {
-                    const type = exp.customType || categoryMapping[exp.category] || 'needs';
-                    summary[type] += exp.amount;
-                });
+                filteredExpenses.forEach(exp => { summary[getExpenseType(exp)] += exp.amount; });
                 return summary;
             }, [filteredExpenses, categoryMapping]);
 
-            // 固定費の計算
             const fixedTotalData = useMemo(() => {
                 const summary = { needs: 0, wants: 0, investment: 0 };
-                fixedCosts.forEach(cost => {
-                    summary[cost.category] += cost.amount;
-                });
-                // 年間表示の場合は12倍にする（簡易対応）
-                if (viewMode === 'year') {
-                    summary.needs *= 12; summary.wants *= 12; summary.investment *= 12;
-                }
+                fixedCosts.forEach(cost => { summary[cost.category] += cost.amount; });
+                if (viewMode === 'year') { summary.needs *= 12; summary.wants *= 12; summary.investment *= 12; }
                 return summary;
             }, [fixedCosts, viewMode]);
 
-            // 総支出（固定費＋変動費）
-            const currentTotalData = useMemo(() => {
-                return {
-                    needs: variableMonthData.needs + fixedTotalData.needs,
-                    wants: variableMonthData.wants + fixedTotalData.wants,
-                    investment: variableMonthData.investment + fixedTotalData.investment
-                };
-            }, [variableMonthData, fixedTotalData]);
+            const currentTotalData = useMemo(() => ({
+                needs: variableMonthData.needs + fixedTotalData.needs,
+                wants: variableMonthData.wants + fixedTotalData.wants,
+                investment: variableMonthData.investment + fixedTotalData.investment
+            }), [variableMonthData, fixedTotalData]);
 
             const totalFixed = fixedTotalData.needs + fixedTotalData.wants + fixedTotalData.investment;
             const totalVariable = variableMonthData.needs + variableMonthData.wants + variableMonthData.investment;
@@ -286,40 +281,95 @@
             const remainingMoney = targetIncome - totalFixed - totalVariable;
             const remainingPercent = Math.max(0, (remainingMoney / targetIncome) * 100);
 
-            // アコーディオン用データグループ化
             const groupedExpenses = useMemo(() => {
                 if (!selectedDetailType) return [];
-                
-                // 固定費を仮想カテゴリーとして追加
                 const fixedItems = fixedCosts.filter(c => c.category === selectedDetailType).map(c => ({
-                    date: '毎月固定',
-                    memo: '固定費設定より',
-                    amount: viewMode === 'year' ? c.amount * 12 : c.amount,
-                    isFixed: true
+                    date: '毎月固定', memo: '固定費設定より', amount: viewMode === 'year' ? c.amount * 12 : c.amount, isFixed: true
                 }));
-
                 const grouped = {};
-                if (fixedItems.length > 0) {
-                    grouped['📌 固定費'] = { total: fixedItems.reduce((s, i) => s + i.amount, 0), items: fixedItems };
-                }
-
-                // 変動費をグループ化
-                const filteredVars = filteredExpenses.filter(exp => (exp.customType || categoryMapping[exp.category] || 'needs') === selectedDetailType);
+                if (fixedItems.length > 0) grouped['📌 固定費'] = { total: fixedItems.reduce((s, i) => s + i.amount, 0), items: fixedItems };
+                const filteredVars = filteredExpenses.filter(exp => getExpenseType(exp) === selectedDetailType);
                 filteredVars.forEach(exp => {
                     if (!grouped[exp.category]) grouped[exp.category] = { total: 0, items: [] };
                     grouped[exp.category].total += exp.amount;
                     grouped[exp.category].items.push(exp);
                 });
-
                 return Object.entries(grouped).sort((a, b) => b[1].total - a[1].total);
             }, [filteredExpenses, categoryMapping, selectedDetailType, fixedCosts, viewMode]);
 
-            // パイロットからのアドバイス生成
+            // ★ 新機能: ペース分析・アドバイス生成ロジック ★
             const getPilotMessage = () => {
                 if (remainingMoney < 0) return { text: "⚠️ 警告：予算をオーバーしています！支出を見直しましょう。", color: "bg-red-100 text-red-800 border-red-200" };
                 if (remainingPercent < 10) return { text: "🛬 注意：残りの燃料（資金）がわずかです。セーブモードに入ってください。", color: "bg-yellow-100 text-yellow-800 border-yellow-200" };
                 if (currentTotalData.wants > (targetIncome * 0.3)) return { text: "💡 アドバイス：浪費（Wants）が収入の30%を超えています。少し引き締めましょう。", color: "bg-orange-100 text-orange-800 border-orange-200" };
-                return { text: "✈️ 順調です！このままのペースでフライトを続けましょう。", color: "bg-blue-100 text-blue-800 border-blue-200" };
+                
+                if (viewMode === 'month' && selectedMonth) {
+                    const today = new Date();
+                    const currentMonthStr = `${today.getFullYear()}年${String(today.getMonth() + 1).padStart(2, '0')}月`;
+                    
+                    if (selectedMonth === currentMonthStr) {
+                        const currentDay = today.getDate();
+                        const prevMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                        const prevMonthStr = `${prevMonthDate.getFullYear()}年${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}月`;
+                        
+                        // 前月の同じ日までの変動費を取得
+                        const prevMonthExpenses = expenses.filter(exp => {
+                            if (getMonthString(exp.date) !== prevMonthStr) return false;
+                            const parts = exp.date.split(/[\/\-]/);
+                            if (parts.length >= 3) {
+                                const day = parseInt(parts[2], 10);
+                                return day <= currentDay;
+                            }
+                            return false;
+                        });
+
+                        if (prevMonthExpenses.length > 0) {
+                            let prevVarTotal = 0;
+                            let prevWantsTotal = 0;
+                            prevMonthExpenses.forEach(exp => {
+                                prevVarTotal += exp.amount;
+                                const type = exp.manualType || categoryMapping[exp.category] || 'needs';
+                                if (type === 'wants') prevWantsTotal += exp.amount;
+                            });
+                            
+                            const diff = totalVariable - prevVarTotal;
+                            const wantsDiff = variableMonthData.wants - prevWantsTotal;
+
+                            if (diff > 5000) {
+                                if (wantsDiff > 3000) {
+                                     return { text: `📊 ペース分析：前月の同日より浪費(Wants)が ${wantsDiff.toLocaleString()}円 多いペースです。意識して抑えましょう！`, color: "bg-orange-100 text-orange-800 border-orange-200" };
+                                }
+                                return { text: `📊 ペース分析：前月の同日より支出全体が ${diff.toLocaleString()}円 多いです。後半は引き締めましょう。`, color: "bg-orange-100 text-orange-800 border-orange-200" };
+                            } else if (diff < -5000) {
+                                return { text: `✨ 素晴らしい！前月の同日より支出を ${Math.abs(diff).toLocaleString()}円 抑えられています。`, color: "bg-green-100 text-green-800 border-green-200" };
+                            }
+                        }
+                    } else {
+                        // 過去の月の結果報告
+                        const [yearStr, monthStr] = selectedMonth.replace('月','').split('年');
+                        if (yearStr && monthStr) {
+                            const yearNum = parseInt(yearStr, 10);
+                            const monthNum = parseInt(monthStr, 10) - 1; 
+                            
+                            const prevMonthDate = new Date(yearNum, monthNum - 1, 1);
+                            const prevMonthStr = `${prevMonthDate.getFullYear()}年${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}月`;
+                            
+                            const prevMonthExpenses = expenses.filter(exp => getMonthString(exp.date) === prevMonthStr);
+                            if (prevMonthExpenses.length > 0) {
+                                 let prevVarTotal = 0;
+                                 prevMonthExpenses.forEach(exp => { prevVarTotal += exp.amount; });
+                                 const diff = totalVariable - prevVarTotal;
+                                 
+                                 if (diff > 0) {
+                                     return { text: `📝 振り返り：この月は前月より支出が ${diff.toLocaleString()}円 多かった月でした。`, color: "bg-slate-100 text-slate-700 border-slate-200" };
+                                 } else if (diff < 0) {
+                                     return { text: `📝 振り返り：この月は前月より支出を ${Math.abs(diff).toLocaleString()}円 節約できた優秀な月でした！`, color: "bg-blue-100 text-blue-700 border-blue-200" };
+                                 }
+                            }
+                        }
+                    }
+                }
+                return { text: "✈️ フライト順調です！このままのペースを維持しましょう。", color: "bg-blue-100 text-blue-800 border-blue-200" };
             };
             const pilotMsg = getPilotMessage();
 
@@ -329,7 +379,6 @@
                 <div className="min-h-screen flex justify-center font-sans pb-24">
                     <div className="w-full max-w-md bg-white shadow-xl relative min-h-screen">
                         
-                        {/* ヘッダーエリア */}
                         <header className="bg-slate-900 text-white text-center sticky top-0 z-20">
                             <div className="p-4 flex justify-between items-center">
                                 <h1 className="text-xl font-black tracking-wider italic">Money Pilot ✈️</h1>
@@ -344,7 +393,6 @@
                                 <button className={`flex-1 py-3 text-sm font-bold transition ${viewMode === 'year' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-900' : 'text-slate-400 hover:bg-slate-700'}`} onClick={() => setViewMode('year')}>YEAR</button>
                             </div>
                             
-                            {/* 月・年 ナビゲーション */}
                             <div className="bg-slate-100 flex justify-between items-center px-4 py-2 text-slate-800 border-b">
                                 <button onClick={() => {
                                     const list = viewMode === 'month' ? availableMonths : availableYears;
@@ -366,9 +414,9 @@
 
                         <div className="p-4 space-y-6">
                             
-                            {/* ナビゲーション（パイロットボード） */}
+                            {/* パイロットボード (メッセージ部分) */}
                             <div className="bg-white rounded-2xl border-2 border-slate-100 shadow-sm overflow-hidden">
-                                <div className={`px-4 py-3 text-sm font-bold border-b ${pilotMsg.color}`}>
+                                <div className={`px-4 py-3 text-sm font-bold border-b transition-colors duration-500 ${pilotMsg.color}`}>
                                     {pilotMsg.text}
                                 </div>
                                 <div className="p-5">
@@ -387,12 +435,10 @@
                                 </div>
                             </div>
 
-                            {/* 支出バランス */}
                             <div className="bg-white rounded-xl border p-5 shadow-sm">
                                 <h2 className="text-sm font-bold mb-4 text-slate-400 tracking-wide uppercase border-b pb-2">BALANCE</h2>
                                 {['needs', 'wants', 'investment'].map(type => {
                                     const current = currentTotalData[type];
-                                    // 理想の配分 (Needs 50%, Wants 30%, Inv 20%) を目標値とする
                                     const ratios = { needs: 0.5, wants: 0.3, investment: 0.2 };
                                     const target = targetIncome * ratios[type];
                                     const percent = Math.min((current / target) * 100, 100) || 0;
@@ -411,10 +457,8 @@
                                     );
                                 })}
                             </div>
-
                         </div>
 
-                        {/* 下部固定ボタン */}
                         <div className="fixed bottom-0 w-full max-w-md bg-white border-t p-3 z-20 pb-safe">
                             <button onClick={() => setIsSettingsOpen(true)} className="w-full bg-slate-800 hover:bg-slate-900 py-3.5 rounded-xl font-bold text-white shadow transition flex justify-center items-center space-x-2">
                                 <span>⚙️ フライト設定（予算・固定費・分類）</span>
@@ -444,7 +488,6 @@
                                                         <span className="absolute left-3 top-3 text-slate-500">¥</span>
                                                         <input type="number" value={income} onChange={(e) => handleIncomeChange(e.target.value)} className="w-full pl-8 p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-lg focus:ring-2 focus:ring-blue-500 outline-none" />
                                                     </div>
-                                                    <p className="text-xs text-slate-400 mt-2">この金額をベースに50/30/20の法則で目標額を算出します。</p>
                                                 </div>
 
                                                 <div className="border-t pt-6">
@@ -456,7 +499,7 @@
                                                         {fixedCosts.map((cost) => (
                                                             <div key={cost.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col space-y-2">
                                                                 <div className="flex space-x-2">
-                                                                    <input type="text" value={cost.name} onChange={(e) => handleUpdateFixedCost(cost.id, 'name', e.target.value)} className="flex-1 p-2 border rounded-lg text-sm font-bold bg-white" placeholder="項目名 (例:家賃)" />
+                                                                    <input type="text" value={cost.name} onChange={(e) => handleUpdateFixedCost(cost.id, 'name', e.target.value)} className="flex-1 p-2 border rounded-lg text-sm font-bold bg-white" placeholder="項目名" />
                                                                     <button onClick={() => handleDeleteFixedCost(cost.id)} className="text-red-400 hover:text-red-600 px-2 font-bold text-xl">×</button>
                                                                 </div>
                                                                 <div className="flex space-x-2">
@@ -472,7 +515,6 @@
                                                                 </div>
                                                             </div>
                                                         ))}
-                                                        {fixedCosts.length === 0 && <p className="text-sm text-slate-400 text-center py-2">固定費は登録されていません</p>}
                                                     </div>
                                                 </div>
                                             </div>
@@ -480,7 +522,6 @@
 
                                         {settingsTab === 'category' && (
                                             <div className="space-y-3">
-                                                <p className="text-xs text-slate-500 mb-4">CSVから読み込まれた項目の基本分類を設定します。</p>
                                                 {Object.keys(categoryMapping).map(cat => (
                                                     <div key={cat} className="flex items-center justify-between border-b border-slate-100 pb-3">
                                                         <span className="font-bold text-slate-700">{cat}</span>
@@ -545,7 +586,6 @@
                             </div>
                         )}
                         
-                        {/* CSS for simple animation */}
                         <style>{`
                             @keyframes slide-up {
                                 from { transform: translateY(100%); opacity: 0; }
