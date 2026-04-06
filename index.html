@@ -232,6 +232,15 @@
                 saveToCloud({ income: num });
             };
 
+            // ★ 新機能: 読み込んだ個別の支出データを削除する関数
+            const handleDeleteExpense = async (targetExp) => {
+                if (window.confirm('この支出データを削除してもよろしいですか？')) {
+                    const newExpenses = expenses.filter(exp => exp.id !== targetExp.id);
+                    setExpenses(newExpenses); // 画面に即反映
+                    await saveToCloud({ expenses: newExpenses }); // クラウドに保存
+                }
+            };
+
             const getExpenseType = (exp) => exp.manualType || categoryMapping[exp.category] || 'needs';
 
             const availableMonths = useMemo(() => {
@@ -565,15 +574,43 @@
 
                                                 {expandedCategory === categoryName && (
                                                     <div className="bg-white border-t border-slate-100 divide-y divide-slate-50">
-                                                        {data.items.map((exp, idx) => (
-                                                            <div key={idx} className="flex justify-between items-center p-3 text-sm">
-                                                                <div className={`pl-2 border-l-2 ${exp.isFixed ? 'border-purple-400' : 'border-blue-400'}`}>
-                                                                    <div className="text-xs text-slate-400 font-medium">{exp.date}</div>
-                                                                    {exp.memo && <div className="text-slate-600 mt-0.5">{exp.memo}</div>}
+                                                        {data.items.map((exp, idx) => {
+                                                            const currentType = getExpenseType(exp);
+                                                            const isManual = !!exp.manualType;
+                                                            return (
+                                                                <div key={idx} className="flex justify-between items-center p-3 text-sm">
+                                                                    <div className={`pl-2 border-l-2 ${exp.isFixed ? 'border-purple-400' : 'border-blue-400'} flex-1 overflow-hidden pr-2`}>
+                                                                        <div className="text-xs text-slate-400 font-medium">{exp.date}</div>
+                                                                        {exp.memo && <div className="text-slate-600 mt-0.5 truncate">{exp.memo}</div>}
+                                                                    </div>
+                                                                    <div className="flex flex-col items-end space-y-1 shrink-0">
+                                                                        <div className="font-bold text-slate-600">¥{exp.amount.toLocaleString()}</div>
+                                                                        {!exp.isFixed && (
+                                                                            <div className="flex items-center space-x-2">
+                                                                                <select 
+                                                                                    value={currentType} 
+                                                                                    onChange={(e) => handleExpenseTypeChange(exp, e.target.value)}
+                                                                                    className={`text-[10px] border rounded px-1.5 py-0.5 outline-none font-medium cursor-pointer transition ${
+                                                                                        isManual ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-white border-slate-200 text-slate-500'
+                                                                                    }`}
+                                                                                >
+                                                                                    <option value="needs">必要</option>
+                                                                                    <option value="wants">浪費</option>
+                                                                                    <option value="investment">投資</option>
+                                                                                </select>
+                                                                                <button 
+                                                                                    onClick={() => handleDeleteExpense(exp)} 
+                                                                                    className="text-slate-300 hover:text-red-500 transition px-1 font-bold text-lg"
+                                                                                    title="削除"
+                                                                                >
+                                                                                    ×
+                                                                                </button>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
                                                                 </div>
-                                                                <div className="font-bold text-slate-600">¥{exp.amount.toLocaleString()}</div>
-                                                            </div>
-                                                        ))}
+                                                            );
+                                                        })}
                                                     </div>
                                                 )}
                                             </div>
